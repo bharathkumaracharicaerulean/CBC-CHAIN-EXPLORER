@@ -1,42 +1,51 @@
 version: "2.4"
 
 services:
-  subscan-api:
+  cbc-explorer-observer:
     build: .
-    image: subscan/api
+    image: cbc-explorer/api
     environment: &app_base
-      MYSQL_HOST: mysql
+      MYSQL_HOST: 127.0.0.1
       MYSQL_PASS: 'helloload'
       MYSQL_USER: 'root'
-      # Name of the database subscan will connect to and use
+      # Name of the database cbc-explorer will connect to and use
       # this db must exist
-      MYSQL_DB: 'subscan'
-      REDIS_ADDR: redis:6379
-      CHAIN_WS_ENDPOINT: 'wss://polkadot.api.onfinality.io/public-ws'
+      MYSQL_DB: 'cbc_explorer'
+      REDIS_ADDR: 127.0.0.1:6379
+      CHAIN_WS_ENDPOINT: 'ws://127.0.0.1:9933'
       # the types file used for the chain as:
       # configs/source/{NETWORK_NODE}.json
-      NETWORK_NODE: 'polkadot'
-      DEPLOY_ENV: 'prod'
-    ports:
-      - '4399:4399'
-    networks:
-      - app_net
-  subscan-observer:
-    environment:
-      <<: *app_base
-    image: subscan/api
+      NETWORK_NODE: 'cbc'
+      DEPLOY_ENV: 'dev'
+      SUBSTRATE_ADDRESS_TYPE: 42
+      SUBSTRATE_ACCURACY: 12
     command: ["start","subscribe"]
-    networks:
-      - app_net
+    volumes:
+      - ./configs/config.yaml:/subscan/configs/config.yaml
+    network_mode: host
+    restart: unless-stopped
 
-  subscan-worker:
+  cbc-explorer-worker:
     environment:
       <<: *app_base
-    image: subscan/api
+    image: cbc-explorer/api
     command: [ "start","worker" ]
-    networks:
-      - app_net
+    volumes:
+      - ./configs/config.yaml:/subscan/configs/config.yaml
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      - cbc-explorer-observer
 
-networks:
-  app_net:
-    external: true
+  cbc-explorer-api:
+    build: .
+    image: cbc-explorer/api
+    environment:
+      <<: *app_base
+    volumes:
+      - ./configs/config.yaml:/subscan/configs/config.yaml
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      - cbc-explorer-observer
+      - cbc-explorer-worker
