@@ -69,6 +69,9 @@ func Publish(queue, class string, args interface{}) error {
 }
 
 func RefreshMetadata(ctx context.Context) {
+	if sg == nil || sg.db == nil {
+		return
+	}
 	db := sg.db
 	var count int64
 	_ = db.Model(Account{}).Count(&count)

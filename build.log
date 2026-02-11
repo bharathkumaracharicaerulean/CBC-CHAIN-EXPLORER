@@ -1,0 +1,31 @@
+Building cbc-explorer-observer
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+Sending build context to Docker daemon  14.28MB
+Step 1/16 : FROM golang:1.23.9 as builder
+ ---> 7a0d537c7404
+Step 2/16 : WORKDIR /subscan
+ ---> Running in cde623ba73b9
+ ---> Removed intermediate container cde623ba73b9
+ ---> f517f41a052c
+Step 3/16 : COPY go.mod go.sum ./
+ ---> f2004539b921
+Step 4/16 : RUN go mod download
+ ---> Running in 683aa0aa7989
+ ---> Removed intermediate container 683aa0aa7989
+ ---> 84c28df04784
+Step 5/16 : COPY . /subscan
+ ---> f95f92c38f77
+Step 6/16 : WORKDIR /subscan/cmd
+ ---> Running in 3697e2d065b0
+ ---> Removed intermediate container 3697e2d065b0
+ ---> 2dabb5570db4
+Step 7/16 : RUN go build -o subscan
+ ---> Running in 9da902e152dd
+ ---> Removed intermediate container 9da902e152dd
+ ---> 8681b07cd81b
+Step 8/16 : FROM alpine:3
+ ---> e7b39c54cdec
+Step 9/16 : WORKDIR subscan

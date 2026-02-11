@@ -1,244 +1,281 @@
 {
   "Address": "AccountId",
-  "BlockNumber": "U32",
+  "BlockNumber": "u32",
+  "Balance": "u128",
   "Weight": "u64",
   "Keys": "SessionKeys",
+  "Signature": "MultiSignature",
+  "Hash": "H256",
+  "Nonce": "u32",
   "DispatchInfo": {
     "type": "struct",
     "type_mapping": [
-      [
-        "weight",
-        "Weight"
-      ],
-      [
-        "class",
-        "DispatchClass"
-      ],
-      [
-        "paysFee",
-        "Pays"
-      ]
+      ["weight", "Weight"],
+      ["class", "DispatchClass"],
+      ["paysFee", "Pays"]
     ]
   },
   "DispatchResult": {
     "type": "enum",
     "type_mapping": [
-      [
-        "Ok",
-        "Null"
-      ],
-      [
-        "Error",
-        "DispatchError"
-      ]
+      ["Ok", "Null"],
+      ["Error", "DispatchError"]
     ]
   },
-  "TrustScore": {
+  "EpochStats": {
     "type": "struct",
     "type_mapping": [
-      [
-        "total",
-        "u32"
-      ],
-      [
-        "pos_component",
-        "u32"
-      ],
-      [
-        "poi_component",
-        "u32"
-      ],
-      [
-        "pos_weight",
-        "u8"
-      ],
-      [
-        "poi_weight",
-        "u8"
-      ]
+      ["epoch", "u32"],
+      ["stake_score", "u64"],
+      ["inference_score", "u64"],
+      ["final_score", "u64"],
+      ["authored_blocks", "u32"],
+      ["missed_blocks", "u32"]
+    ]
+  },
+  "ValidatorState": {
+    "type": "struct",
+    "type_mapping": [
+      ["last_active_epoch", "u32"],
+      ["current", "EpochStats"],
+      ["history", "Vec<EpochStats>"],
+      ["uptime", "u32"],
+      ["inference_success_count", "u32"],
+      ["participation_rate", "u32"],
+      ["inference_count", "u64"],
+      ["last_active_block", "u32"],
+      ["name", "Option<Vec<u8>>"],
+      ["trust_score", "u64"]
+    ]
+  },
+  "EpochConfig": {
+    "type": "struct",
+    "type_mapping": [
+      ["blocks_per_epoch", "u32"],
+      ["min_stake", "u128"],
+      ["max_validators", "u32"]
+    ]
+  },
+  "TrustScoreConfig": {
+    "type": "struct",
+    "type_mapping": [
+      ["uptime_weight", "u32"],
+      ["inference_weight", "u32"],
+      ["slashing_weight", "u32"],
+      ["max_growth_rate", "u32"],
+      ["max_decay_rate", "u32"],
+      ["min_trust_score", "u64"],
+      ["max_trust_score", "u64"],
+      ["stability_factor", "u32"]
+    ]
+  },
+  "TrustScoreBoundsData": {
+    "type": "struct",
+    "type_mapping": [
+      ["min_score", "u64"],
+      ["max_score", "u64"],
+      ["max_growth_rate", "u32"],
+      ["max_decay_rate", "u32"],
+      ["stability_factor", "u32"],
+      ["last_updated_epoch", "u32"]
+    ]
+  },
+  "ProposalAction": {
+    "type": "enum",
+    "type_mapping": [
+      ["Slash", "(AccountId, u128)"],
+      ["Reward", "(AccountId, u128)"],
+      ["Eject", "AccountId"],
+      ["AddValidator", "AccountId"],
+      ["RemoveValidator", "AccountId"],
+      ["RewardMultiple", "Vec<(AccountId, u128)>"]
+    ]
+  },
+  "GovernanceProposal": {
+    "type": "struct",
+    "type_mapping": [
+      ["id", "u32"],
+      ["proposer", "AccountId"],
+      ["action", "ProposalAction"],
+      ["votes_for", "u32"],
+      ["votes_against", "u32"],
+      ["status", "ProposalStatus"],
+      ["created_at", "u32"]
+    ]
+  },
+  "ProposalStatus": {
+    "type": "enum",
+    "value_list": ["Pending", "Approved", "Rejected", "Executed"]
+  },
+  "ValidatorAction": {
+    "type": "enum",
+    "type_mapping": [
+      ["Join", "u128"],
+      ["Leave", "Null"]
+    ]
+  },
+  "ValidatorStatus": {
+    "type": "enum",
+    "value_list": ["Active", "Inactive", "Leaving", "Cooldown"]
+  },
+  "ValidatorMetadataInfo": {
+    "type": "struct",
+    "type_mapping": [
+      ["name", "Option<Vec<u8>>"],
+      ["stake", "u128"],
+      ["score", "u64"],
+      ["trust_score", "u64"],
+      ["uptime", "u32"],
+      ["participation_rate", "u32"],
+      ["blocks_authored", "u32"],
+      ["blocks_missed", "u32"],
+      ["inference_count", "u64"],
+      ["last_active_block", "u32"],
+      ["join_time", "u32"],
+      ["status", "ValidatorStatus"]
+    ]
+  },
+  "PerformanceRecord": {
+    "type": "struct",
+    "type_mapping": [
+      ["epoch", "u32"],
+      ["blocks_authored", "u32"],
+      ["blocks_missed", "u32"],
+      ["inference_count", "u32"],
+      ["score", "u64"],
+      ["participation_rate", "u32"]
     ]
   },
   "ValidatorProfile": {
     "type": "struct",
     "type_mapping": [
-      [
-        "account_id",
-        "AccountId"
-      ],
-      [
-        "stake",
-        "Balance"
-      ],
-      [
-        "inference_capability",
-        "u32"
-      ],
-      [
-        "pos_performance_score",
-        "u32"
-      ],
-      [
-        "poi_performance_score",
-        "u32"
-      ],
-      [
-        "trust_score",
-        "TrustScore"
-      ],
-      [
-        "is_active",
-        "bool"
-      ],
-      [
-        "last_active_epoch",
-        "u32"
-      ]
+      ["account_id", "AccountId"],
+      ["stake", "Balance"],
+      ["inference_capability", "u32"],
+      ["pos_performance_score", "u32"],
+      ["poi_performance_score", "u32"],
+      ["trust_score", "u64"],
+      ["is_active", "bool"],
+      ["last_active_epoch", "u32"]
     ]
   },
   "EpochInfo": {
     "type": "struct",
     "type_mapping": [
-      [
-        "epoch_index",
-        "u32"
-      ],
-      [
-        "start_block",
-        "BlockNumber"
-      ],
-      [
-        "length",
-        "u32"
-      ],
-      [
-        "validator_count",
-        "u32"
-      ]
+      ["epoch_index", "u32"],
+      ["start_block", "BlockNumber"],
+      ["length", "u32"],
+      ["validator_count", "u32"]
+    ]
+  },
+  "EpochHistory": {
+    "type": "struct",
+    "type_mapping": [
+      ["epoch", "u32"],
+      ["start_block", "u32"],
+      ["end_block", "u32"],
+      ["validator_count", "u32"],
+      ["total_stake", "u128"],
+      ["average_score", "u64"],
+      ["blocks_produced", "u32"],
+      ["total_rewards", "u128"]
+    ]
+  },
+  "SystemMetrics": {
+    "type": "struct",
+    "type_mapping": [
+      ["total_validators", "u32"],
+      ["active_validators", "u32"],
+      ["total_stake", "u128"],
+      ["average_score", "u64"],
+      ["current_epoch", "u32"],
+      ["blocks_in_epoch", "u32"],
+      ["epoch_progress", "u32"]
     ]
   },
   "AuthorSelectionMode": {
     "type": "enum",
-    "value_list": [
-      "RoundRobin",
-      "StakeWeighted",
-      "PerformanceBased",
-      "Hybrid"
-    ]
+    "value_list": ["RoundRobin", "StakeWeighted", "PerformanceBased", "Hybrid"]
   },
   "ConsensusConfig": {
     "type": "struct",
     "type_mapping": [
-      [
-        "pos_weight",
-        "u8"
-      ],
-      [
-        "poi_weight",
-        "u8"
-      ],
-      [
-        "epoch_length",
-        "u32"
-      ],
-      [
-        "max_validators",
-        "u32"
-      ],
-      [
-        "min_stake",
-        "Balance"
-      ]
+      ["pos_weight", "u64"],
+      ["poi_weight", "u64"],
+      ["epoch_length", "u32"],
+      ["max_validators", "u32"],
+      ["min_stake", "Balance"]
     ]
   },
   "InferenceChallenge": {
     "type": "struct",
     "type_mapping": [
-      [
-        "challenge_id",
-        "u32"
-      ],
-      [
-        "challenger",
-        "AccountId"
-      ],
-      [
-        "target_validator",
-        "AccountId"
-      ],
-      [
-        "challenge_data",
-        "Vec<u8>"
-      ],
-      [
-        "expected_result",
-        "Vec<u8>"
-      ],
-      [
-        "deadline",
-        "BlockNumber"
-      ],
-      [
-        "is_resolved",
-        "bool"
-      ]
+      ["challenge_id", "u32"],
+      ["challenger", "AccountId"],
+      ["target_validator", "AccountId"],
+      ["challenge_data", "Vec<u8>"],
+      ["expected_result", "Vec<u8>"],
+      ["deadline", "BlockNumber"],
+      ["is_resolved", "bool"]
     ]
   },
   "ChallengeResult": {
     "type": "struct",
     "type_mapping": [
-      [
-        "challenge_id",
-        "u32"
-      ],
-      [
-        "validator",
-        "AccountId"
-      ],
-      [
-        "result",
-        "Vec<u8>"
-      ],
-      [
-        "submission_block",
-        "BlockNumber"
-      ],
-      [
-        "is_correct",
-        "bool"
-      ]
+      ["challenge_id", "u32"],
+      ["validator", "AccountId"],
+      ["result", "Vec<u8>"],
+      ["submission_block", "BlockNumber"],
+      ["is_correct", "bool"]
     ]
   },
   "ValidatorPerformance": {
     "type": "struct",
     "type_mapping": [
-      [
-        "validator",
-        "AccountId"
-      ],
-      [
-        "blocks_produced",
-        "u32"
-      ],
-      [
-        "blocks_expected",
-        "u32"
-      ],
-      [
-        "uptime_percentage",
-        "u32"
-      ],
-      [
-        "challenges_completed",
-        "u32"
-      ],
-      [
-        "challenges_failed",
-        "u32"
-      ],
-      [
-        "last_updated",
-        "BlockNumber"
-      ]
+      ["validator", "AccountId"],
+      ["blocks_produced", "u32"],
+      ["blocks_expected", "u32"],
+      ["uptime_percentage", "u32"],
+      ["challenges_completed", "u32"],
+      ["challenges_failed", "u32"],
+      ["last_updated", "BlockNumber"]
+    ]
+  },
+  "InvariantViolation": {
+    "type": "enum",
+    "type_mapping": [
+      ["Economic", "Vec<u8>"],
+      ["Validator", "Vec<u8>"],
+      ["Temporal", "Vec<u8>"]
+    ]
+  },
+  "InvariantSeverity": {
+    "type": "enum",
+    "value_list": ["Low", "Medium", "High", "Critical"]
+  },
+  "ParameterType": {
+    "type": "enum",
+    "value_list": [
+      "PosWeight", "PoiWeight", "MinStake", "MaxValidators", "EpochLength",
+      "MinValidatorScore", "MaxValidatorScore", "ValidatorScoreDecay",
+      "SlashingPenalty", "RewardRate", "TrustScoreUptimeWeight",
+      "TrustScoreInferenceWeight", "TrustScoreSlashingWeight"
+    ]
+  },
+  "DeterministicEpochEngine": {
+    "type": "struct",
+    "type_mapping": [
+      ["randomness_salt", "[u8; 32]"],
+      ["epoch_salt", "[u8; 16]"],
+      ["author_sequence_cache", "Vec<u8>"],
+      ["last_processed_epoch", "u32"],
+      ["last_epoch_output_hash", "[u8; 32]"]
+    ]
+  },
+  "SessionKeys": {
+    "type": "struct",
+    "type_mapping": [
+      ["dcf", "[u8; 32]"]
     ]
   }
 }

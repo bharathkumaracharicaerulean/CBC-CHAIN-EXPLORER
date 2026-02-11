@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/itering/subscan/util"
@@ -32,7 +33,9 @@ func (s *Service) regRuntimeVersion(ctx context.Context, name string, spec int, 
 func (s *Service) regCodecMetadata(hash ...string) string {
 	if coded, err := rpc.GetMetadataByHash(nil, hash...); err == nil {
 		return coded
-	}
+	} else {
+        fmt.Printf("DEBUG: GetMetadataByHash error: %v\n", err)
+    }
 	return ""
 }
 
