@@ -8,7 +8,6 @@ echo ""
 
 # Stop all services
 echo "Step 1: Stopping all services..."
-cd cbc-chain-explorer
 docker-compose down
 cd ..
 pkill -f "cbc-node" || true
@@ -67,7 +66,7 @@ nohup "$CBC_BINARY" \
   --rpc-max-request-size 20 \
   --rpc-max-response-size 20 \
   --quiet \
-  > "$LOG_FILE" 2>&1 &
+  > /dev/null 2>&1 &
 
 NODE_PID=$!
 cd "$SCRIPT_DIR"
@@ -95,7 +94,7 @@ done
 if [ "$NODE_READY" = false ]; then
     echo ""
     echo "❌ Error: CBC node failed to become ready after $((MAX_RETRIES * 2)) seconds"
-    echo "   Check node logs: tail -f cbc-chain/cbc-node.log"
+    echo "   Check node logs with: journalctl -f or check running processes"
     exit 1
 fi
 echo ""
