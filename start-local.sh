@@ -17,6 +17,7 @@ until docker exec cbc-mysql mysqladmin ping -uroot -phelloload --silent; do
     echo -n "."
     sleep 1
 done
+sleep 3
 echo ""
 echo "✓ Database containers ready"
 
