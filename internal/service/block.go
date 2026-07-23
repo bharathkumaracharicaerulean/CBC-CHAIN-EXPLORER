@@ -1,0 +1,189 @@
+package service
+
+import (
+	"context"
+	"fmt"
+	"github.com/itering/cbcscan/model"
+	"github.com/itering/cbcscan/util"
+	"github.com/itering/cbcscan/util/address"
+	"github.com/itering/substrate-api-rpc"
+	"github.com/itering/substrate-api-rpc/hasher"
+	smodel "github.com/itering/substrate-api-rpc/model"
+	"github.com/itering/substrate-api-rpc/rpc"
+	"github.com/itering/substrate-api-rpc/storage"
+	"strings"
+)
+
+func (s *Service) CreateChainBlock(ctx context.Context, hash string, block *smodel.Block, event string, spec int, sessionIndex uint) (err error) {
+	var (
+		decodeExtrinsics []map[string]interface{}
+		decodeEvent      interface{}
+		logs             []storage.DecoderLog
+		codecErr         error
+	)
+
+	blockNum := util.StringToUInt(util.HexToNumStr(block.Header.Number))
+	metadataInstant := s.getMetadataInstant(spec, hash)
+
+	// Extrinsic
+	decodeExtrinsics, err = substrate.DecodeExtrinsic(block.Extrinsics, metadataInstant, spec)
+	if err != nil {
+		codecErr = err
+		util.Logger().Error(err)
+	}
+	// event
+	decodeEvent, err = substrate.DecodeEvent(event, metadataInstant, spec)
+	if err != nil {
+		codecErr = err
+		util.Logger().Error(err)
+	}
+
+	// log
+	logs, err = substrate.DecodeLogDigest(block.Header.Digest.Logs)
+	if err != nil {
+		codecErr = err
+		util.Logger().Error(err)
+	}
+
+	s.dao.SplitBlockTable(blockNum)
+
+	txn := s.dao.DbBegin()
+	defer s.dao.DbRollback(txn)
+
+	var events []model.ChainEvent
+	_ = util.UnmarshalAny(&events, decodeEvent)
+
+	eventMap := s.checkoutExtrinsicEvents(events, blockNum)
+
+	cb := model.ChainBlock{
+		ID:             blockNum,
+		Hash:           hash,
+		BlockNum:       blockNum,
+		ParentHash:     block.Header.ParentHash,
+		StateRoot:      block.Header.StateRoot,
+		ExtrinsicsRoot: block.Header.ExtrinsicsRoot,
+		SpecVersion:    spec,
+		Finalized:      true,
+	}
+
+	var extrinsics []model.ChainExtrinsic
+	_ = util.UnmarshalAny(&extrinsics, decodeExtrinsics)
+	extrinsics = s.fillExtrinsicHash(blockNum, extrinsics, block.Extrinsics)
+	cb.BlockTimestamp = FindOutBlockTime(extrinsics)
+	err = s.createExtrinsic(ctx, txn, &cb, extrinsics, block.Extrinsics, eventMap)
+	if err != nil {
+		return err
+	}
+
+	if err = s.AddEvent(txn, &cb, events); err != nil {
+		return err
+	}
+
+	var runtimeLogData []byte
+	if runtimeLogData, err = s.EmitLog(txn, blockNum, logs, true); err != nil {
+		return err
+	}
+
+	cb.Validator = s.blockAuthor(ctx, cb.ParentHash, events, runtimeLogData, sessionIndex)
+	cb.CodecError = codecErr != nil
+	cb.ExtrinsicsCount = len(extrinsics)
+	cb.EventCount = len(events)
+
+	if err = s.dao.CreateBlock(ctx, txn, &cb); err == nil {
+		s.dao.DbCommit(txn)
+		// emit extrinsic/event process after commit
+		for index := range events {
+			e := events[index]
+			e.BlockNum = blockNum
+			if err = s.emitEvent(&e); err != nil {
+				return err
+			}
+		}
+		for index := range extrinsics {
+			e := extrinsics[index]
+			if err = s.emitExtrinsic(ctx, &e); err != nil {
+				return err
+			}
+		}
+		return s.emitBlock(ctx, &cb)
+	}
+	return err
+}
+
+func (s *Service) checkoutExtrinsicEvents(e []model.ChainEvent, blockNumInt uint) map[string][]model.ChainEvent {
+	eventMap := make(map[string][]model.ChainEvent)
+	for _, event := range e {
+		extrinsicIndex := fmt.Sprintf("%d-%d", blockNumInt, event.ExtrinsicIdx)
+		eventMap[extrinsicIndex] = append(eventMap[extrinsicIndex], event)
+	}
+	return eventMap
+}
+
+func (s *Service) GetCurrentRuntimeSpecVersion(blockNum uint) int {
+	if util.CurrentRuntimeSpecVersion != 0 {
+		return util.CurrentRuntimeSpecVersion
+	}
+	if block := s.dao.GetNearBlock(blockNum); block != nil {
+		return block.SpecVersion
+	}
+	return -1
+}
+
+func (s *Service) GetBlockByHashJson(ctx context.Context, hash string) *model.ChainBlockJson {
+	block := s.dao.GetBlockByHash(ctx, hash)
+	if block == nil {
+		return nil
+	}
+	return s.dao.BlockAsJson(ctx, block)
+}
+
+func (s *Service) ValidatorsList(hash string) (validatorList []string) {
+	validatorsRaw, _ := rpc.ReadStorage(nil, "Session", "Validators", hash)
+	for _, addr := range validatorsRaw.ToStringSlice() {
+		validatorList = append(validatorList, util.TrimHex(addr))
+	}
+	return
+}
+
+func (s *Service) SessionIndex(hash string) uint {
+	index, _ := rpc.ReadStorage(nil, "Session", "CurrentIndex", hash)
+	return uint(index.ToInt())
+}
+
+func (s *Service) fillExtrinsicHash(blockNum uint, extrinsicList []model.ChainExtrinsic, extrinsicRaws []string) []model.ChainExtrinsic {
+	for i, e := range extrinsicList {
+		extrinsicList[i].BlockNum = blockNum
+		if e.ExtrinsicHash == "" {
+			extrinsicList[i].ExtrinsicHash = util.AddHex(util.BytesToHex(hasher.HashByCryptoName(util.HexToBytes(extrinsicRaws[i]), "Blake2_256")))
+		}
+		extrinsicList[i].ExtrinsicIndex = fmt.Sprintf("%d-%d", e.BlockNum, i)
+	}
+	return extrinsicList
+}
+
+func (s *Service) blockAuthor(ctx context.Context, parentHash string, events []model.ChainEvent, runtimeLogData []byte, sessionIndex uint) string {
+	if len(runtimeLogData) > 0 {
+		// check new session
+		var validatorList []string
+		newSession := false
+		for _, e := range events {
+			if strings.EqualFold(e.ModuleId, "Session") && strings.EqualFold(e.EventId, "NewSession") {
+				newSession = true
+			}
+		}
+		// newSession use new validator list
+		if newSession || sessionIndex == 0 {
+			validatorList = s.ValidatorsList(parentHash)
+		} else {
+			validatorList = s.dao.GetSessionValidatorsById(ctx, sessionIndex)
+			// if db not found, use on-chain query
+			if len(validatorList) == 0 {
+				validatorList = s.ValidatorsList(parentHash)
+				// save to db
+				_ = s.dao.CreateNewSession(ctx, sessionIndex, validatorList)
+			}
+		}
+		return address.Format(substrate.ExtractAuthor(runtimeLogData, validatorList))
+	}
+	return ""
+}

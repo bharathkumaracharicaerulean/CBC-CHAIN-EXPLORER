@@ -1,0 +1,18 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: cbc-mysql
+    command: --default-authentication-plugin=mysql_native_password
+    environment:
+      MYSQL_ROOT_PASSWORD: helloload
+      MYSQL_DATABASE: cbc_explorer
+    ports:
+      - "3306:3306"
+    restart: unless-stopped
+
+  redis:
+    image: redis:alpine
+    container_name: cbc-redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped

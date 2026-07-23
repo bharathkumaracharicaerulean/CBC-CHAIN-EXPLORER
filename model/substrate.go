@@ -1,0 +1,558 @@
+package model
+
+import (
+	"bytes"
+	"database/sql/driver"
+	"encoding/json"
+	"fmt"
+	scalecodec "github.com/itering/scale.go"
+	"github.com/itering/scale.go/types"
+	"github.com/itering/subscan-plugin/storage"
+	"github.com/itering/cbcscan/share/substrate"
+	"github.com/itering/cbcscan/util"
+	"github.com/itering/cbcscan/util/address"
+	"github.com/itering/substrate-api-rpc/metadata"
+	"github.com/pkg/errors"
+	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
+	"strconv"
+	"strings"
+)
+
+const (
+	IdGenerateCoefficient      = 100_000   // 100 thousand
+	SplitTableBlockNum    uint = 1_000_000 // 1 million
+)
+
+type ChainBlock struct {
+	ID              uint   `gorm:"primary_key" json:"id"`
+	BlockNum        uint   `json:"block_num" gorm:"index:block_num,unique"`
+	BlockTimestamp  int    `json:"block_timestamp"`
+	Hash            string `gorm:"default: null;size:100;index:hash" json:"hash"`
+	ParentHash      string `gorm:"default: null;size:100" json:"parent_hash"`
+	StateRoot       string `gorm:"default: null;size:100" json:"state_root"`
+	ExtrinsicsRoot  string `gorm:"default: null;size:100" json:"extrinsics_root"`
+	EventCount      int    `json:"event_count"`
+	ExtrinsicsCount int    `json:"extrinsics_count"`
+	SpecVersion     int    `json:"spec_version"`
+	Validator       string `json:"validator"`
+	CodecError      bool   `json:"codec_error"`
+	Finalized       bool   `json:"finalized"`
+}
+
+func (c ChainBlock) TableName() string {
+	if c.BlockNum/SplitTableBlockNum == 0 {
+		return "chain_blocks"
+	}
+	return fmt.Sprintf("chain_blocks_%d", c.BlockNum/SplitTableBlockNum)
+}
+
+func (c *ChainBlock) AsPlugin() *storage.Block {
+	return &storage.Block{
+		BlockNum:       int(c.BlockNum),
+		BlockTimestamp: c.BlockTimestamp,
+		Hash:           c.Hash,
+		SpecVersion:    c.SpecVersion,
+		Validator:      c.Validator,
+		Finalized:      c.Finalized,
+	}
+}
+
+type ChainEvent struct {
+	ID             uint        `gorm:"primary_key;autoIncrement:false" json:"-"`
+	ExtrinsicIndex string      `gorm:"default:null;size:100;index:extrinsic_index" json:"extrinsic_index"`
+	BlockNum       uint        `json:"block_num"  gorm:"index:block_num"`
+	ExtrinsicIdx   int         `json:"extrinsic_idx"`
+	ModuleId       string      `json:"module_id" gorm:"size:255;index:query_function"`
+	EventId        string      `json:"event_id" gorm:"size:255;index:query_function"`
+	Params         EventParams `json:"params,omitempty" gorm:"type:json"`
+	EventIdx       uint        `json:"event_idx"`
+	Phase          int         `json:"phase" gorm:"size:8"`
+
+	ParamsRawBytes []byte `json:"-" gorm:"types:bytes" `
+	ParamsRaw      string `json:"params_raw" gorm:"-" ` // only for decode
+}
+
+func (c ChainEvent) TableName() string {
+	if c.BlockNum/SplitTableBlockNum == 0 {
+		return "chain_events"
+	}
+	return fmt.Sprintf("chain_events_%d", c.BlockNum/SplitTableBlockNum)
+}
+
+func (c ChainEvent) Id() uint {
+	return c.BlockNum*IdGenerateCoefficient + c.EventIdx
+}
+
+func (c ChainEvent) EventIndex() string {
+	return fmt.Sprintf("%d-%d", c.BlockNum, c.EventIdx)
+}
+
+func (c *ChainEvent) AsPlugin() *storage.Event {
+	return &storage.Event{
+		BlockNum:     int(c.BlockNum),
+		ExtrinsicIdx: c.ExtrinsicIdx,
+		ModuleId:     c.ModuleId,
+		EventId:      c.EventId,
+		Params:       c.Params.Marshal(),
+		EventIdx:     int(c.EventIdx),
+		Id:           c.Id(),
+	}
+}
+
+func (c *ChainEvent) AfterFind(tx *gorm.DB) error {
+	ctx := tx.Statement.Context
+	if len(c.ParamsRawBytes) == 0 {
+		return nil
+	}
+	runtimeVersion := GetBlockRuntimeVersion(ctx, tx, c.BlockNum)
+	spec := GetMetadataInstant(ctx, tx, runtimeVersion)
+	event := getEvent(spec, c.ModuleId, c.EventId)
+	if event != nil {
+		params, err := substrate.DecodeEventParams(util.BytesToHex(c.ParamsRawBytes), event.Args, spec, event, *runtimeVersion)
+		if err != nil {
+			util.Logger().Error(fmt.Errorf("decode event params error id %d: %w", c.ID, err))
+			return nil
+		}
+		// use ParamsRawBytes to store the decoded params
+		c.Params = convertScaleEventParams(params)
+	}
+	return nil
+}
+
+func getCall(m *metadata.Instant, moduleName, callName string) *types.MetadataCalls {
+	module := getModule(m, moduleName)
+	if module == nil {
+		return nil
+	}
+
+	for i, call := range module.Calls {
+		if strings.EqualFold(call.Name, callName) {
+			return &module.Calls[i]
+		}
+	}
+	return nil
+}
+
+func getModule(m *metadata.Instant, moduleName string) *types.MetadataModules {
+	for i, mm := range m.Metadata.Modules {
+		if strings.EqualFold(mm.Name, moduleName) {
+			return &m.Metadata.Modules[i]
+		}
+	}
+	return nil
+}
+
+func getEvent(m *metadata.Instant, moduleName, eventName string) *types.MetadataEvents {
+	module := getModule(m, moduleName)
+	if module == nil {
+		return nil
+	}
+
+	for i, event := range module.Events {
+		if strings.EqualFold(event.Name, eventName) {
+			return &module.Events[i]
+		}
+	}
+
+	return nil
+}
+
+func convertScaleEventParams(params []scalecodec.EventParam) EventParams {
+	var eventParams EventParams
+	for _, param := range params {
+		eventParams = append(eventParams, EventParam{Type: param.Type, Value: param.Value, TypeName: param.TypeName, Name: param.Name})
+	}
+	return eventParams
+}
+
+func (c *ChainEvent) BeforeCreate(_ *gorm.DB) error {
+	if len(c.Params) == 0 {
+		return nil
+	}
+	if len(c.ParamsRawBytes) != 0 {
+		c.Params = EventParams{}
+	}
+	return nil
+}
+
+type EventParams []EventParam
+
+type EventParam struct {
+	Type     string      `json:"type"`
+	Value    interface{} `json:"value"`
+	TypeName string      `json:"type_name,omitempty"`
+	Name     string      `json:"name,omitempty"`
+}
+
+func (j EventParams) Value() (driver.Value, error) {
+	if len(j) == 0 {
+		return nil, nil
+	}
+	return json.Marshal(j)
+}
+
+func (j EventParams) Marshal() []byte {
+	b, _ := json.Marshal(j)
+	return b
+}
+
+func (j *EventParams) Scan(src interface{}) error { return json.Unmarshal(src.([]byte), j) }
+
+type ChainExtrinsic struct {
+	ID                 uint   `gorm:"primary_key;autoIncrement:false"`
+	ExtrinsicIndex     string `json:"extrinsic_index" gorm:"default: null;size:255;index:extrinsic_index"`
+	BlockNum           uint   `json:"block_num" gorm:"index:block_num"`
+	BlockTimestamp     int    `json:"block_timestamp"`
+	CallModuleFunction string `json:"call_module_function"  gorm:"size:255;index:query_function"`
+	CallModule         string `json:"call_module"  gorm:"size:255;index:query_function"`
+
+	Params        ExtrinsicParams `json:"params" gorm:"type:json;"`
+	AccountId     string          `json:"account_id" gorm:"size:255;index:account_id"`
+	Signature     string          `json:"signature"`
+	Nonce         int             `json:"nonce"`
+	Era           string          `json:"era"`
+	ExtrinsicHash string          `json:"extrinsic_hash" gorm:"default: null;index:extrinsic_hash"`
+	IsSigned      bool            `json:"is_signed" gorm:"index"`
+	Success       bool            `json:"success"`
+	Fee           decimal.Decimal `json:"fee" gorm:"type:decimal(65,0);"`
+	UsedFee       decimal.Decimal `json:"used_fee" gorm:"type:decimal(65,0);"`
+
+	ParamsRawBytes []byte `json:"-" gorm:"types:bytes" `
+	ParamsRaw      string `json:"params_raw" gorm:"-" ` // only for decode
+}
+
+type ExtrinsicParams []ExtrinsicParam
+
+func (j ExtrinsicParams) Value() (driver.Value, error) {
+	if len(j) == 0 {
+		return nil, nil
+	}
+
+	return json.Marshal(j)
+}
+
+func (c *ChainExtrinsic) AfterFind(tx *gorm.DB) error {
+	ctx := tx.Statement.Context
+	if len(c.ParamsRawBytes) == 0 {
+		return nil
+	}
+	specVersion := GetBlockRuntimeVersion(ctx, tx, uint(c.BlockNum))
+	spec := GetMetadataInstant(ctx, tx, specVersion)
+	call := getCall(spec, c.CallModule, c.CallModuleFunction)
+	if call != nil {
+		params, err := substrate.DecodeExtrinsicParams(util.BytesToHex(c.ParamsRawBytes), spec, call, *specVersion)
+		if err != nil {
+			util.Logger().Error(fmt.Errorf("decode extrinsic params error id %d: %w", c.ID, err))
+			return nil
+		}
+		// use ParamsRawBytes to store the decoded params
+		c.Params = convertScaleExtrinsicParams(params)
+	}
+	return nil
+}
+
+func convertScaleExtrinsicParams(params []scalecodec.ExtrinsicParam) (list ExtrinsicParams) {
+	for _, param := range params {
+		list = append(list, ExtrinsicParam{Type: param.Type, Value: param.Value, TypeName: param.TypeName, Name: param.Name})
+	}
+	return
+}
+
+func (c *ChainExtrinsic) BeforeCreate(_ *gorm.DB) error {
+	if len(c.Params) == 0 {
+		return nil
+	}
+	if len(c.ParamsRawBytes) != 0 {
+		c.Params = ExtrinsicParams{}
+	}
+	return nil
+}
+
+func (c *ChainExtrinsic) AfterCreate(tx *gorm.DB) error {
+	if c.AccountId == "" {
+		return nil
+	}
+	return UpdateAccountExtrinsicMapping(tx, c.AccountId, c.BlockNum)
+}
+
+func (j *ExtrinsicParams) Scan(src interface{}) error { return json.Unmarshal(src.([]byte), j) }
+
+func (j *ExtrinsicParams) Marshal() []byte {
+	b, _ := json.Marshal(j)
+	return b
+}
+
+type ExtrinsicParam struct {
+	Name     string      `json:"name"`
+	Type     string      `json:"type"`
+	Value    interface{} `json:"value"`
+	TypeName string      `json:"type_name,omitempty"`
+}
+
+func ParsingExtrinsicParam(params interface{}) (param []ExtrinsicParam) {
+	util.Logger().Error(util.UnmarshalAny(&param, params))
+	return
+}
+
+func (c ChainExtrinsic) Id() uint {
+	return ParseExtrinsicOrEventIndex(c.ExtrinsicIndex).GenerateId()
+}
+
+func (c ChainExtrinsic) TableName() string {
+	if c.BlockNum/SplitTableBlockNum == 0 {
+		return "chain_extrinsics"
+	}
+	return fmt.Sprintf("chain_extrinsics_%d", c.BlockNum/SplitTableBlockNum)
+}
+
+func ExtrinsicTableIndexByBlock(blockNum uint) int {
+	return int(blockNum / SplitTableBlockNum)
+}
+
+func (c *ChainExtrinsic) AsPlugin() *storage.Extrinsic {
+	return &storage.Extrinsic{
+		ExtrinsicIndex:     c.ExtrinsicIndex,
+		CallModule:         c.CallModule,
+		CallModuleFunction: c.CallModuleFunction,
+		Params:             c.Params.Marshal(),
+		AccountId:          c.AccountId,
+		Signature:          c.Signature,
+		Nonce:              c.Nonce,
+		Era:                c.Era,
+		ExtrinsicHash:      c.ExtrinsicHash,
+		Success:            c.Success,
+		Fee:                c.Fee,
+	}
+}
+
+type RuntimeVersion struct {
+	Id          int    `json:"-"`
+	Name        string `json:"-"`
+	SpecVersion int    `json:"spec_version" gorm:"index:spec_version,unique"`
+	Modules     string `json:"modules"  gorm:"type:TEXT;"`
+	RawData     string `json:"-" gorm:"type:string;"`
+	BlockNum    uint   `json:"block_num" gorm:"index:block_num"`
+}
+
+type ChainLog struct {
+	ID        uint    `gorm:"primary_key"`
+	BlockNum  uint    `json:"block_num" `
+	LogIndex  string  `json:"log_index" gorm:"default: null;size:100"`
+	LogType   string  `json:"log_type" `
+	Data      LogData `json:"data" gorm:"type:json;"`
+	Finalized bool    `json:"finalized"`
+}
+
+func (c ChainLog) TableName() string {
+	if c.BlockNum/SplitTableBlockNum == 0 {
+		return "chain_logs"
+	}
+	return fmt.Sprintf("chain_logs_%d", c.BlockNum/SplitTableBlockNum)
+}
+
+func (c ChainLog) Id() uint {
+	return ParseExtrinsicOrEventIndex(c.LogIndex).GenerateId()
+}
+
+type LogData map[string]interface{}
+
+func (l *LogData) Scan(value interface{}) error {
+	switch v := value.(type) {
+	case []byte:
+		if len(v) == 0 {
+			return nil
+		}
+	case string:
+		if v == "" {
+			return nil
+		}
+	default:
+		return errors.New(fmt.Sprint("Failed to unmarshal JSONB value:", value))
+	}
+	var result LogData
+	err := util.UnmarshalAny(&result, value)
+	*l = result
+	return err
+}
+
+func (l LogData) Value() (driver.Value, error) {
+	return json.Marshal(l)
+}
+
+func (l LogData) Bytes() []byte {
+	b, _ := json.Marshal(l)
+	return b
+}
+
+type ExtrinsicOrEventIndex struct {
+	BlockNum uint
+	Index    uint
+}
+
+func ParseExtrinsicOrEventIndex(indexStr string) *ExtrinsicOrEventIndex {
+	if sliceIndex := strings.Split(indexStr, "-"); len(sliceIndex) == 2 {
+		return &ExtrinsicOrEventIndex{BlockNum: util.StringToUInt(sliceIndex[0]), Index: util.StringToUInt(sliceIndex[1])}
+	}
+	return nil
+}
+
+func ParseIndexInt(index uint) *ExtrinsicOrEventIndex {
+	return &ExtrinsicOrEventIndex{BlockNum: index / IdGenerateCoefficient, Index: index % IdGenerateCoefficient}
+}
+
+func (e *ExtrinsicOrEventIndex) GenerateId() uint {
+	if e == nil {
+		return 0
+	}
+	return e.BlockNum*IdGenerateCoefficient + e.Index
+}
+
+func (e *ExtrinsicOrEventIndex) GenerateIndex() string {
+	if e == nil {
+		return ""
+	}
+	return fmt.Sprintf("%d-%d", e.BlockNum, e.Index)
+}
+
+func CheckoutParamValueAddress(value interface{}) string {
+	switch a := value.(type) {
+	case string:
+		return address.Format(a)
+	// Id         AccountId
+	// Index      Compact<AccountIndex>
+	// Raw   	  Bytes
+	// Address32  H256
+	// Address20  H160
+	case map[string]interface{}: // multi address
+		if v, ok := a["Id"]; ok {
+			return address.Format(util.ToString(v))
+		}
+		if v, ok := a["Raw"]; ok {
+			return address.Format(util.ToString(v))
+		}
+		if v, ok := a["Address32"]; ok {
+			return address.Format(util.ToString(v))
+		}
+		if v, ok := a["Address20"]; ok {
+			return address.Format(util.ToString(v))
+		}
+		if v, ok := a["Eth"]; ok {
+			return address.Format(util.ToString(v))
+		}
+	}
+	return address.Format(util.ToString(value))
+}
+
+type DispatchInfo struct {
+	Weight    decimal.Decimal
+	Class     string      `json:"class"`
+	PaysFee   string      `json:"pays_fee"`
+	WeightTry interface{} `json:"weight"`
+	V2        bool        `json:"v2"`
+}
+
+func (d *DispatchInfo) UnmarshalJSON(data []byte) error {
+	type T DispatchInfo
+
+	j := json.NewDecoder(bytes.NewReader(data))
+	j.UseNumber()
+	if err := j.Decode((*T)(d)); err != nil {
+		return err
+	}
+
+	switch v := d.WeightTry.(type) {
+	case json.Number:
+		d.Weight, _ = decimal.NewFromString(v.String())
+		return nil
+	}
+
+	var v2Weight *struct {
+		ProofSize uint64 `json:"proof_size"`
+		RefTime   uint64 `json:"ref_time"`
+	}
+
+	if err := util.UnmarshalAny(&v2Weight, d.WeightTry); err != nil {
+		return err
+	}
+	d.V2 = true
+	d.Weight, _ = decimal.NewFromString(strconv.FormatUint(v2Weight.RefTime, 10))
+	return nil
+}
+
+func CheckoutWeight(events []ChainEvent) (decimal.Decimal, decimal.Decimal, bool) {
+	var extrinsicState DispatchInfo
+	var weight decimal.Decimal
+	actualFee := decimal.NewFromInt32(-1)
+	var isV2Weight bool
+	for _, event := range events {
+		if !strings.EqualFold(event.ModuleId, "system") && !strings.EqualFold(event.ModuleId, "TransactionPayment") {
+			continue
+		}
+		switch {
+		case strings.EqualFold(event.EventId, "ExtrinsicSuccess"):
+			if len(event.Params) < 1 {
+				continue
+			}
+			util.Logger().Error(util.UnmarshalAny(&extrinsicState, event.Params[0].Value))
+			weight = extrinsicState.Weight
+			isV2Weight = extrinsicState.V2
+		case strings.EqualFold(event.EventId, "ExtrinsicFailed"):
+			if len(event.Params) < 2 {
+				continue
+			}
+			util.Logger().Error(util.UnmarshalAny(&extrinsicState, event.Params[1].Value))
+			weight = extrinsicState.Weight
+			isV2Weight = extrinsicState.V2
+			// https://github.com/paritytech/substrate/blob/d0540a7996/frame/transaction-payment/src/lib.rs#L832
+			// https://github.com/open-web3-stack/open-runtime-module-library/blob/master/oracle/src/lib.rs#L168
+			// TransactionFeePaid { who: T::AccountId, actual_fee: BalanceOf<T>, tip: BalanceOf<T> },
+		case strings.EqualFold(event.EventId, "TransactionFeePaid"):
+			if len(event.Params) < 3 {
+				continue
+			}
+			actualFee = util.DecimalFromInterface(event.Params[1].Value)
+			tip := util.DecimalFromInterface(event.Params[2].Value)
+			actualFee = actualFee.Sub(tip)
+		}
+	}
+	return weight, actualFee, isV2Weight
+}
+
+type IntSlice []int
+
+func (s IntSlice) Value() (driver.Value, error) {
+	return json.Marshal(s)
+}
+
+func (s *IntSlice) Scan(src interface{}) error { return json.Unmarshal(src.([]byte), s) }
+
+type AccountExtrinsicMapping struct {
+	Id             uint     `gorm:"primary_key;autoIncrement:true"`
+	AccountId      string   `json:"account_id" gorm:"size:255;index:account_id_extrinsic,unique"`
+	ExtrinsicTable IntSlice `json:"extrinsic_table" gorm:"type:json;"`
+}
+
+func (a AccountExtrinsicMapping) TableName() string { return "account_extrinsic_mapping" }
+
+func UpdateAccountExtrinsicMapping(tx *gorm.DB, accountId string, blockNum uint) error {
+	if accountId == "" {
+		return nil
+	}
+	var m AccountExtrinsicMapping
+	if err := tx.Where("account_id = ?", accountId).First(&m).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			m = AccountExtrinsicMapping{AccountId: accountId, ExtrinsicTable: IntSlice{ExtrinsicTableIndexByBlock(blockNum)}}
+			return tx.Scopes(IgnoreDuplicate).Create(&m).Error
+		}
+		return err
+	}
+	idx := ExtrinsicTableIndexByBlock(blockNum)
+	for _, v := range m.ExtrinsicTable {
+		if v == idx {
+			return nil
+		}
+	}
+	m.ExtrinsicTable = append(m.ExtrinsicTable, idx)
+	return tx.Model(&AccountExtrinsicMapping{}).Where("id = ?", m.Id).Update("extrinsic_table", m.ExtrinsicTable).Error
+}

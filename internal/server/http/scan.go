@@ -1,0 +1,375 @@
+package http
+
+import (
+	"errors"
+	"github.com/itering/cbcscan/model"
+	"github.com/itering/cbcscan/share/token"
+	"github.com/itering/cbcscan/util/address"
+
+	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
+	"github.com/itering/cbcscan/util"
+)
+
+// @Summary Current network metadata
+// @Description get metadata info, include chain customer info, runtime info, etc.
+// @Tags metadata
+// @Produce json
+// @Success 200 {object} http.J{data=map[string]string}
+// @Router /api/scan/metadata [post]
+func metadataHandle(c *gin.Context) {
+	m, err := svc.Metadata(c.Request.Context())
+	toJson(c, m, err)
+}
+
+// @Summary Token list
+// @Tags tokens
+// @Accept json
+// @Produce json
+// @Success 200 {object} http.J{data=object{token=[]string,detail=map[string]token.Token}}
+// @Router /api/scan/token [post]
+func tokenHandle(c *gin.Context) {
+	toJson(c, token.GetDefaultToken(), nil)
+}
+
+type BlocksParams struct {
+	Limit  int  `json:"row" binding:"min=1,max=100"`
+	Before uint `json:"before" binding:"omitempty"`
+	After  uint `json:"after" binding:"omitempty"`
+}
+
+// @Summary Blocks list
+// @Tags block
+// @Accept json
+// @Produce json
+// @Param params body BlocksParams true "params"
+// @Success 200 {object} http.J{data=object{blocks=[]model.SampleBlockJson,pagination=object}}
+// @Router /api/scan/blocks [post]
+func blocksHandle(c *gin.Context) {
+	p := new(BlocksParams)
+	if err := c.MustBindWith(p, binding.JSON); err != nil {
+		toJson(c, nil, err)
+		return
+	}
+
+	ctx := c.Request.Context()
+	list, pageInfo := svc.GetBlocksSampleCursor(ctx, p.Limit, p.Before, p.After)
+	toJson(c, map[string]interface{}{
+		"blocks": list, "pagination": pageInfo,
+	}, nil)
+}
+
+type BlockParams struct {
+	BlockNum  uint   `json:"block_num" binding:"omitempty,min=0"`
+	BlockHash string `json:"block_hash" binding:"omitempty,len=66"`
+}
+
+// @Summary Get block details
+// @Tags block
+// @Accept json
+// @Produce json
+// @Param params body BlockParams true "params"
+// @Success 200 {object} http.J{data=model.ChainBlockJson}
+// @Router /api/scan/block [post]
+func blockHandle(c *gin.Context) {
+	p := new(BlockParams)
+	if err := c.MustBindWith(p, binding.JSON); err != nil {
+		toJson(c, nil, err)
+		return
+	}
+	ctx := c.Request.Context()
+
+	if p.BlockHash == "" {
+		toJson(c, svc.GetBlockByNum(ctx, p.BlockNum), nil)
+	} else {
+		toJson(c, svc.GetBlockByHashJson(ctx, p.BlockHash), nil)
+	}
+}
+
+type extrinsicsParams struct {
+	Limit        int    `json:"row" binding:"min=1,max=100"`
+	Before       uint   `json:"before" binding:"omitempty"`
+	After        uint   `json:"after" binding:"omitempty"`
+	Signed       string `json:"signed" binding:"omitempty"`
+	Address      string `json:"address" binding:"omitempty"`
+	Module       string `json:"module" binding:"omitempty"`
+	Call         string `json:"call" binding:"omitempty"`
+	BlockNum     uint   `json:"block_num" binding:"omitempty"`
+	HiddenParams bool   `json:"hidden_params" binding:"omitempty"` // hide extrinsic params in response
+}
+
+// extrinsicsHandle handler get extrinsics list
+// @Summary Get extrinsics list
+// @Tags extrinsics
+// @Accept json
+// @Produce json
+// @Param params body extrinsicsParams true "params"
+// @Success 200 {object} http.J{data=object{extrinsics=[]model.ChainExtrinsicJson,pagination=object}}
+// @Router /api/scan/extrinsics [post]
+func extrinsicsHandle(c *gin.Context) {
+	p := new(extrinsicsParams)
+	if err := c.MustBindWith(p, binding.JSON); err != nil {
+		toJson(c, nil, err)
+		return
+	}
+	ctx := c.Request.Context()
+	var query []model.Option
+	var fixedTableIndex = -1
+
+	if p.Module != "" {
+		query = append(query, model.Where("call_module = ?", p.Module))
+	}
+	if p.Call != "" {
+		query = append(query, model.Where("call_module_function = ?", p.Module))
+	}
+
+	if p.Signed == "signed" {
+		query = append(query, model.Where("is_signed = ?", true))
+	}
+	if p.BlockNum > 0 {
+		query = append(query, model.Where("block_num = ?", p.BlockNum))
+		fixedTableIndex = int(p.BlockNum / model.SplitTableBlockNum)
+	}
+
+	if p.Address != "" {
+		account := address.Decode(p.Address)
+		if account == "" {
+			toJson(c, nil, util.InvalidAccountAddress)
+			return
+		}
+		query = append(query, model.Where("account_id = ? and is_signed = ?", account, true))
+	}
+	if p.HiddenParams {
+		query = append(query, model.Omit("params", "params_raw_bytes"))
+	}
+
+	list, pageInfo := svc.GetExtrinsicList(ctx, p.Limit, fixedTableIndex, p.Before, p.After, address.Decode(p.Address), query...)
+	toJson(c, map[string]interface{}{
+		"extrinsics": list,
+		"pagination": pageInfo,
+	}, nil)
+
+}
+
+type extrinsicParams struct {
+	ExtrinsicIndex string `json:"extrinsic_index" binding:"omitempty"`
+	Hash           string `json:"hash" binding:"omitempty,len=66"`
+}
+
+// extrinsicHandle handler get extrinsic info by extrinsic index or extrinsic hash
+// @Summary Get extrinsic details
+// @Tags extrinsics
+// @Accept json
+// @Produce json
+// @Param params body extrinsicParams true "params"
+// @Success 200 {object} http.J{data=model.ExtrinsicDetail}
+// @Router /api/scan/extrinsic [post]
+func extrinsicHandle(c *gin.Context) {
+	p := new(extrinsicParams)
+	if err := c.MustBindWith(p, binding.JSON); err != nil {
+		toJson(c, nil, err)
+		return
+	}
+	if p.ExtrinsicIndex == "" && p.Hash == "" {
+		toJson(c, nil, errors.New("extrinsic_index or hash is required"))
+		return
+	}
+
+	ctx := c.Request.Context()
+
+	if p.ExtrinsicIndex != "" {
+		toJson(c, svc.GetExtrinsicByIndex(ctx, p.ExtrinsicIndex), nil)
+	} else {
+		toJson(c, svc.GetExtrinsicDetailByHash(ctx, p.Hash), nil)
+	}
+}
+
+type eventsParams struct {
+	Limit          int    `json:"row" binding:"min=1,max=100"`
+	Before         uint   `json:"before" binding:"omitempty"`
+	After          uint   `json:"after" binding:"omitempty"`
+	Module         string `json:"module" binding:"omitempty"`
+	Event          string `json:"event" binding:"omitempty"`
+	BlockNum       uint   `json:"block_num" binding:"omitempty"`
+	ExtrinsicIndex string `json:"extrinsic_index" binding:"omitempty"`
+	HiddenParams   bool   `json:"hidden_params" binding:"omitempty"` // hide event params in response
+}
+
+// eventsHandle handler get events list
+// @Summary Get events list
+// @Tags events
+// @Accept json
+// @Produce json
+// @Param params body eventsParams true "params"
+// @Success 200 {object} http.J{data=object{events=[]model.ChainEventJson,pagination=object}}
+// @Router /api/scan/events [post]
+func eventsHandle(c *gin.Context) {
+	p := new(eventsParams)
+	if err := c.MustBindWith(p, binding.JSON); err != nil {
+		toJson(c, nil, err)
+		return
+	}
+	ctx := c.Request.Context()
+
+	var query []model.Option
+	var fixedTableIndex = -1
+
+	if p.Module != "" {
+		query = append(query, model.Where("module_id = ?", p.Module))
+	}
+	if p.Event != "" {
+		query = append(query, model.Where("event_id = ?", p.Event))
+	}
+	if p.BlockNum > 0 {
+		query = append(query, model.Where("block_num = ?", p.BlockNum))
+		fixedTableIndex = int(p.BlockNum / model.SplitTableBlockNum)
+	}
+	if p.ExtrinsicIndex != "" {
+		query = append(query, model.Where("extrinsic_index = ?", p.ExtrinsicIndex))
+		parseExtrinsic := model.ParseExtrinsicOrEventIndex(p.ExtrinsicIndex)
+		if parseExtrinsic == nil {
+			toJson(c, nil, util.ParamsError)
+			return
+		}
+		fixedTableIndex = int(parseExtrinsic.BlockNum / model.SplitTableBlockNum)
+	}
+	if p.HiddenParams {
+		query = append(query, model.Omit("params", "params_raw_bytes"))
+	}
+
+	events, pageInfo := svc.EventsList(ctx, p.Limit, fixedTableIndex, p.Before, p.After, query...)
+	toJson(c, map[string]interface{}{"events": events, "pagination": pageInfo}, nil)
+}
+
+type eventParams struct {
+	EventIndex string `json:"event_index" binding:"required"`
+}
+
+// @Summary Get event info
+// @Tags events
+// @Accept json
+// @Produce json
+// @Param params body eventParams true "params"
+// @Success 200 {object} http.J{data=model.ChainEventJson}
+// @Router /api/scan/event [post]
+func eventHandle(c *gin.Context) {
+	p := new(eventParams)
+	if err := c.MustBindWith(p, binding.JSON); err != nil {
+		toJson(c, nil, err)
+		return
+	}
+	ctx := c.Request.Context()
+	toJson(c, svc.EventById(ctx, p.EventIndex), nil)
+}
+
+type logsParams struct {
+	BlockNum uint `json:"block_num" binding:"required"`
+}
+
+// logsHandle handler get logs list
+// @Summary Get logs list
+// @Tags logs
+// @Accept json
+// @Produce json
+// @Param params body logsParams true "params"
+// @Success 200 {object} http.J{data=[]model.ChainLogJson}
+// @Router /api/scan/logs [post]
+func logsHandle(c *gin.Context) {
+	p := new(logsParams)
+	if err := c.MustBindWith(p, binding.JSON); err != nil {
+		toJson(c, nil, err)
+		return
+	}
+	ctx := c.Request.Context()
+	toJson(c, svc.LogsList(ctx, p.BlockNum), nil)
+}
+
+type checkSearchParams struct {
+	Hash string `json:"hash" binding:"len=66"`
+}
+
+// checkSearchHashHandle handler check hash type, block or extrinsic or evm tx hash
+// @Summary Check hash type
+// @Tags hash
+// @Accept json
+// @Produce json
+// @Param params body checkSearchParams true "params"
+// @Success 200 {object} http.J{data=map[string]string}
+// @Router/api/scan/check_hash[post]
+func checkSearchHashHandle(c *gin.Context) {
+	p := new(checkSearchParams)
+	if err := c.MustBindWith(p, binding.JSON); err != nil {
+		toJson(c, nil, err)
+		return
+	}
+
+	ctx := c.Request.Context()
+
+	if data := svc.GetBlockByHash(ctx, p.Hash); data != nil {
+		toJson(c, map[string]string{"hash_type": "block"}, nil)
+		return
+	}
+	if data := svc.GetExtrinsicByHash(ctx, p.Hash); data != nil {
+		toJson(c, map[string]string{"hash_type": "extrinsic"}, nil)
+		return
+	}
+	// todo evm tx hash
+	toJson(c, nil, util.RecordNotFound)
+}
+
+// @Summary Get runtime list
+// @Description runtimeListHandler  get runtime list
+// @Tags runtime
+// @Produce json
+// @Success 200 {object} http.J{data=object{list=[]model.RuntimeVersion}}
+// @Router /api/scan/runtime/list [post]
+func runtimeListHandler(c *gin.Context) {
+	toJson(c, map[string]interface{}{
+		"list": svc.SubstrateRuntimeList(),
+	}, nil)
+}
+
+type runtimeMetadataParams struct {
+	Spec int `json:"spec"`
+}
+
+// runtimeMetadataHandle get runtime metadata info by spec version
+// @Summary Get runtime metadata
+// @Tags runtime
+// @Accept json
+// @Produce json
+// @Param params body runtimeMetadataParams true "params"
+// @Success 200 {object} http.J{data=object{info=metadata.Instant}}
+// @Router /api/scan/runtime/metadata [post]
+func runtimeMetadataHandle(c *gin.Context) {
+	p := new(runtimeMetadataParams)
+	if err := c.MustBindWith(p, binding.JSON); err != nil {
+		toJson(c, nil, err)
+		return
+	}
+
+	if info := svc.SubstrateRuntimeInfo(p.Spec); info != nil {
+		toJson(c, map[string]interface{}{"info": info.Metadata.Modules}, nil)
+		return
+	}
+
+	toJson(c, map[string]interface{}{"info": nil}, nil)
+}
+
+func cbcValidatorsHandle(c *gin.Context) {
+	ctx := c.Request.Context()
+	v, err := svc.GetCBCValidators(ctx)
+	toJson(c, v, err)
+}
+
+func cbcDCFHandle(c *gin.Context) {
+	ctx := c.Request.Context()
+	d, err := svc.GetCBCDCFMetrics(ctx)
+	toJson(c, d, err)
+}
+
+func cbcDVFHandle(c *gin.Context) {
+	ctx := c.Request.Context()
+	d, err := svc.GetCBCDVFMetrics(ctx)
+	toJson(c, d, err)
+}

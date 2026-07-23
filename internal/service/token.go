@@ -1,0 +1,28 @@
+package service
+
+import (
+	"github.com/itering/cbcscan/share/token"
+	"github.com/itering/cbcscan/util"
+	"github.com/itering/substrate-api-rpc/rpc"
+	"github.com/itering/substrate-api-rpc/websocket"
+	"sync"
+)
+
+var onceToken sync.Once
+
+// Unknown token reg
+func (s *Service) unknownToken() {
+	websocket.SetEndpoint(util.WSEndPoint)
+	onceToken.Do(func() {
+		if p, _ := rpc.GetSystemProperties(nil); p != nil {
+			util.AddressType = util.IntToString(p.Ss58Format)
+			util.BalanceAccuracy = util.IntToString(p.TokenDecimals)
+			token.SetDefault(&token.Token{
+				TokenId:  p.TokenSymbol,
+				Symbol:   p.TokenSymbol,
+				Decimals: p.TokenDecimals,
+			})
+		}
+	})
+
+}
