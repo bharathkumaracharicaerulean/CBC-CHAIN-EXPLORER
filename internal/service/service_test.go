@@ -107,6 +107,10 @@ func (m *MockDao) CreateBlock(context.Context, *dao.GormDB, *model.ChainBlock) (
 	return nil
 }
 
+func (m *MockDao) RollbackBlock(ctx context.Context, blockNum uint) error {
+	return nil
+}
+
 func (m *MockDao) UpdateEventAndExtrinsic(*dao.GormDB, *model.ChainBlock, int, int, int, string, bool, bool) error {
 	return nil
 }
@@ -204,7 +208,7 @@ func (m *MockDao) GetExtrinsicsByBlockNum(blockNum uint) []model.ChainExtrinsicJ
 func (m *MockDao) GetExtrinsicList(c context.Context, page, row int, order string, fixedTableIndex int, afterId uint, queryWhere ...model.Option) ([]model.ChainExtrinsic, int) {
 	return nil, 0
 }
-func (m *MockDao) GetExtrinsicListCursor(c context.Context, limit int, fixedTableIndex int, beforeId, afterId uint, queryWhere ...model.Option) ([]model.ChainExtrinsic, bool, bool) {
+func (m *MockDao) GetExtrinsicListCursor(c context.Context, limit int, fixedTableIndex int, beforeId, afterId uint, accountId string, queryWhere ...model.Option) ([]model.ChainExtrinsic, bool, bool) {
 	return []model.ChainExtrinsic{testSignedExtrinsic}, false, false
 }
 

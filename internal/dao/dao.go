@@ -40,7 +40,11 @@ func (d *Dao) Close() {
 	if d.redis != nil {
 		_ = d.redis.Close()
 	}
-	_ = d.db
+	if d.db != nil {
+		if sqlDB, err := d.db.DB(); err == nil {
+			_ = sqlDB.Close()
+		}
+	}
 }
 
 // Ping ping the resource.

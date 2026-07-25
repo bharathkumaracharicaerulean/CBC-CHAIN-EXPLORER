@@ -117,10 +117,6 @@ const (
 )
 
 func (s *Service) FillBlockData(ctx context.Context, blockNum uint, force bool) (err error) {
-	block := s.dao.GetBlockByNum(ctx, blockNum)
-	if block != nil && block.Finalized && !block.CodecError && !force {
-		return nil
-	}
 	defer func() {
 		if err != nil {
 			metrics.SubBlockFillError.Inc()
@@ -139,7 +135,21 @@ func (s *Service) FillBlockData(ctx context.Context, blockNum uint, force bool) 
 	if err != nil || blockHash == "" {
 		return fmt.Errorf("ChainGetBlockHash get error %v", err)
 	}
+
+	block := s.dao.GetBlockByNum(ctx, blockNum)
+	if block != nil && block.Hash == blockHash && block.Finalized && !block.CodecError && !force {
+		return nil
+	}
+
 	util.Logger().Info(fmt.Sprintf("Block num %d hash %s", blockNum, blockHash))
+
+	// Re-org/Fork resolution check
+	if block != nil && block.Hash != blockHash {
+		util.Logger().Warning(fmt.Sprintf("Detected chain re-org at block %d: DB hash %s, Chain hash %s. Rolling back old block data.", blockNum, block.Hash, blockHash))
+		if err = s.dao.RollbackBlock(ctx, blockNum); err != nil {
+			return fmt.Errorf("re-org rollback error for block %d: %v", blockNum, err)
+		}
+	}
 
 	// block
 	if err = websocket.SendWsRequest(conn, v, rpc.ChainGetBlock(wsBlock, blockHash)); err != nil {
@@ -151,12 +161,13 @@ func (s *Service) FillBlockData(ctx context.Context, blockNum uint, force bool) 
 	}
 
 	// event
+	var event string
 	if err = websocket.SendWsRequest(conn, v, rpc.StateGetStorage(wsEvent, util.EventStorageKey, blockHash)); err != nil {
-		return fmt.Errorf("websocket send error: %v", err)
-	}
-	event, _ := v.ToString()
-	if event == "" && blockNum > 0 {
-		return errors.New("nil event data")
+		util.Logger().Warning(fmt.Sprintf("StateGetStorage events error for block %d: %v. Continuing with empty events (pruned state).", blockNum, err))
+		event = ""
+		err = nil
+	} else {
+		event, _ = v.ToString()
 	}
 
 	// runtime
@@ -165,11 +176,16 @@ func (s *Service) FillBlockData(ctx context.Context, blockNum uint, force bool) 
 	}
 	var specVersion int
 
-	if r := v.ToRuntimeVersion(); r == nil {
+	r := v.ToRuntimeVersion()
+	if r == nil || r.SpecVersion == 0 {
 		specVersion = s.GetCurrentRuntimeSpecVersion(blockNum)
 	} else {
 		specVersion = r.SpecVersion
 		_ = s.regRuntimeVersion(ctx, r.ImplName, specVersion, blockNum, blockHash)
+	}
+
+	if specVersion <= 0 {
+		specVersion = 100
 	}
 
 	if specVersion > util.CurrentRuntimeSpecVersion {
@@ -181,16 +197,17 @@ func (s *Service) FillBlockData(ctx context.Context, blockNum uint, force bool) 
 	}
 
 	// session index
-	if err = websocket.SendWsRequest(conn, v, rpc.StateGetStorage(wsSessionIndex, util.SessionIndexStorageKey, blockHash)); err != nil {
-		return fmt.Errorf("websocket send error: %v", err)
-	}
-
 	var sessionIndex uint
-	sessionIndexData, err := v.ToString()
-	if err == nil || sessionIndexData != "" {
-		r, _, err := storage.Decode(sessionIndexData, "U32", nil)
-		if err == nil {
-			sessionIndex = uint(r.ToInt())
+	if err = websocket.SendWsRequest(conn, v, rpc.StateGetStorage(wsSessionIndex, util.SessionIndexStorageKey, blockHash)); err != nil {
+		util.Logger().Warning(fmt.Sprintf("StateGetStorage session index error for block %d: %v. Continuing with session index 0 (pruned state).", blockNum, err))
+		err = nil
+	} else {
+		sessionIndexData, err := v.ToString()
+		if err == nil || sessionIndexData != "" {
+			r, _, err := storage.Decode(sessionIndexData, "U32", nil)
+			if err == nil {
+				sessionIndex = uint(r.ToInt())
+			}
 		}
 	}
 

@@ -36,7 +36,7 @@ func (g *GoWorker) Init() {
 		"server":    configs.Boot.Redis.Addr,
 		"password":  configs.Boot.Redis.Password,
 		"database":  util.IntToString(configs.Boot.Redis.DbName),
-		"pool":      "30",
+		"pool":      "150",
 		"process":   "1",
 		"namespace": util.NetworkNode,
 	})

@@ -17,7 +17,7 @@ until docker exec cbc-mysql mysqladmin ping -uroot -phelloload --silent; do
     echo -n "."
     sleep 1
 done
-sleep 3
+sleep 10
 echo ""
 echo "✓ Database containers ready"
 
@@ -51,6 +51,7 @@ export SKIP_EVM_PLUGIN="true"
 export NO_EVM="true"
 export LOG_LEVEL="debug"
 export DEBUG="true"
+export WORKER_GOROUTINE_COUNT=100
 
 # Step 5: Launch Explorer Services on Host
 echo "Step 4: Launching local observer, worker, and API..."

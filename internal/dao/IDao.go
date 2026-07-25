@@ -15,6 +15,7 @@ type IDao interface {
 	DbRollback(*GormDB)
 
 	CreateBlock(context.Context, *GormDB, *model.ChainBlock) (err error)
+	RollbackBlock(context.Context, uint) error
 	UpdateEventAndExtrinsic(*GormDB, *model.ChainBlock, int, int, int, string, bool, bool) error
 	GetNearBlock(uint) *model.ChainBlock
 	SplitBlockTable(blockNum uint)

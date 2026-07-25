@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/itering/cbcscan/util"
+	"github.com/itering/cbcscan/util/address"
 )
 
 type CBCValidator struct {
@@ -35,15 +36,22 @@ type CBCDCFMetrics struct {
 	ActiveValidators int    `json:"active_validators"`
 }
 
+type validatorInfo struct {
+	HexAddress  string
+	SS58Address string
+	Weight      uint64
+}
+
 type CBCDVFMetrics struct {
 	FinalizedBlock     uint64  `json:"finalized_block"`
 	FinalityThreshold  float64 `json:"finality_threshold"`
 	CheckInterval      uint32  `json:"check_interval"`
 	CurrentVotingRound uint32  `json:"current_voting_round"`
 	Status             string  `json:"status"`
-	VoteTally          uint64  `json:"vote_tally"`
-	TotalWeight        uint64  `json:"total_weight"`
-	CheckpointBlock    uint64  `json:"checkpoint_block"`
+	VoteTally          uint64            `json:"vote_tally"`
+	TotalWeight        uint64            `json:"total_weight"`
+	CheckpointBlock    uint64            `json:"checkpoint_block"`
+	Voters             map[string]string   `json:"voters"`
 }
 
 func rpcCall(method string, params []interface{}) ([]byte, error) {
@@ -257,6 +265,9 @@ func (s *Service) GetCBCDVFMetrics(ctx context.Context) (CBCDVFMetrics, error) {
 	}
 
 	// Dynamic validator weights
+	var vals []validatorInfo
+	voters := make(map[string]string)
+
 	resWeights, err := rpcCall("dvf_getValidatorWeights", []interface{}{})
 	if err == nil {
 		var resp struct {
@@ -266,7 +277,20 @@ func (s *Service) GetCBCDVFMetrics(ctx context.Context) (CBCDVFMetrics, error) {
 			var total uint64
 			for _, item := range resp.Result {
 				if len(item) == 2 {
-					total += parseUint64(item[1])
+					weight := parseUint64(item[1])
+					total += weight
+
+					ss58Addr, ok := item[0].(string)
+					if ok {
+						hexAddr := util.AddHex(strings.ToLower(address.Decode(ss58Addr)))
+						vals = append(vals, validatorInfo{
+							HexAddress:  hexAddr,
+							SS58Address: ss58Addr,
+							Weight:      weight,
+						})
+						voters[hexAddr] = "active"
+						voters[ss58Addr] = "active"
+					}
 				}
 			}
 			if total > 0 {
@@ -317,5 +341,183 @@ func (s *Service) GetCBCDVFMetrics(ctx context.Context) (CBCDVFMetrics, error) {
 		}
 	}
 
+	// Subset Sum solver to dynamically resolve who voted based on VoteTally
+	if metrics.VoteTally > 0 && len(vals) > 0 {
+		n := len(vals)
+		limit := 1 << n
+		for i := 0; i < limit; i++ {
+			var sum uint64
+			for j := 0; j < n; j++ {
+				if (i & (1 << j)) != 0 {
+					sum += vals[j].Weight
+				}
+			}
+			if sum == metrics.VoteTally {
+				for j := 0; j < n; j++ {
+					if (i & (1 << j)) != 0 {
+						voters[vals[j].HexAddress] = "voted"
+						voters[vals[j].SS58Address] = "voted"
+					} else {
+						voters[vals[j].HexAddress] = "active"
+						voters[vals[j].SS58Address] = "active"
+					}
+				}
+				break
+			}
+		}
+	} else if metrics.VoteTally == 0 && len(vals) > 0 {
+		var finalizedHash string
+		if metrics.FinalizedBlock > 0 {
+			resFinHash, err := rpcCall("chain_getBlockHash", []interface{}{metrics.FinalizedBlock})
+			if err == nil {
+				var resp struct {
+					Result string `json:"result"`
+				}
+				if err := json.Unmarshal(resFinHash, &resp); err == nil {
+					finalizedHash = resp.Result
+				}
+			}
+		}
+
+		if finalizedHash != "" {
+			resBlock, err := rpcCall("chain_getBlock", []interface{}{finalizedHash})
+			if err == nil {
+				var resp struct {
+					Result struct {
+						Justifications interface{} `json:"justifications"`
+					} `json:"result"`
+				}
+				if err := json.Unmarshal(resBlock, &resp); err == nil {
+					voters = parseJustificationVoters(resp.Result.Justifications, vals)
+					var tally uint64
+					for _, val := range vals {
+						if voters[val.HexAddress] == "voted" {
+							tally += val.Weight
+						}
+					}
+					metrics.VoteTally = tally
+				}
+			}
+		}
+
+		// Check validator profiles to set actual offline status for any node that didn't vote
+		validators, err := s.GetCBCValidators(ctx)
+		if err == nil {
+			for _, val := range validators {
+				status := strings.ToLower(val.Status)
+				isOffline := status == "idle" || status == "offline"
+
+				hexAddr := util.AddHex(strings.ToLower(address.Decode(val.Address)))
+
+				if isOffline {
+					voters[val.Address] = "offline"
+					voters[strings.ToLower(val.Address)] = "offline"
+					voters[val.AccountId] = "offline"
+					voters[strings.ToLower(val.AccountId)] = "offline"
+					voters[hexAddr] = "offline"
+				} else {
+					if voters[val.Address] != "voted" {
+						voters[val.Address] = "active"
+					}
+					if voters[strings.ToLower(val.Address)] != "voted" {
+						voters[strings.ToLower(val.Address)] = "active"
+					}
+					if voters[val.AccountId] != "voted" {
+						voters[val.AccountId] = "active"
+					}
+					if voters[strings.ToLower(val.AccountId)] != "voted" {
+						voters[strings.ToLower(val.AccountId)] = "active"
+					}
+					if voters[hexAddr] != "voted" {
+						voters[hexAddr] = "active"
+					}
+				}
+			}
+		}
+	}
+	metrics.Voters = voters
+
 	return metrics, nil
+}
+
+func parseJustificationVoters(justificationsRaw interface{}, vals []validatorInfo) map[string]string {
+	voters := make(map[string]string)
+	for _, val := range vals {
+		voters[val.HexAddress] = "active"
+		voters[val.SS58Address] = "active"
+	}
+
+	jList, ok := justificationsRaw.([]interface{})
+	if !ok {
+		return voters
+	}
+
+	for _, item := range jList {
+		pair, ok := item.([]interface{})
+		if !ok || len(pair) < 2 {
+			continue
+		}
+
+		// check engine ID
+		engineIDBytes, ok1 := pair[0].([]interface{})
+		if !ok1 || len(engineIDBytes) != 4 {
+			continue
+		}
+
+		engineID := ""
+		for _, b := range engineIDBytes {
+			num := parseUint64(b)
+			engineID += string(rune(num))
+		}
+
+		if engineID != "dvfd" {
+			continue
+		}
+
+		// parse justification bytes
+		bytesRaw, ok2 := pair[1].([]interface{})
+		if !ok2 {
+			continue
+		}
+
+		justBytes := make([]byte, len(bytesRaw))
+		for idx, b := range bytesRaw {
+			justBytes[idx] = byte(parseUint64(b))
+		}
+
+		// search for each validator's 32-byte public key in justBytes
+		for _, val := range vals {
+			pubKey := address.Decode(val.SS58Address) // hex public key without 0x
+			pubKeyBytes := util.HexToBytes(pubKey)
+			if len(pubKeyBytes) == 32 {
+				if bytesContains(justBytes, pubKeyBytes) {
+					voters[val.HexAddress] = "voted"
+					voters[val.SS58Address] = "voted"
+				}
+			}
+		}
+	}
+	return voters
+}
+
+func bytesContains(slice, subslice []byte) bool {
+	if len(subslice) == 0 {
+		return true
+	}
+	if len(slice) < len(subslice) {
+		return false
+	}
+	for i := 0; i <= len(slice)-len(subslice); i++ {
+		match := true
+		for j := 0; j < len(subslice); j++ {
+			if slice[i+j] != subslice[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
 }

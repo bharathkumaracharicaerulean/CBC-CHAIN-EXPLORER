@@ -162,7 +162,7 @@ func (d *Dao) GetBlockByHash(c context.Context, hash string) *model.ChainBlock {
 	blockNum, _ := d.GetBestBlockNum(c)
 	for index := int(blockNum / uint64(model.SplitTableBlockNum)); index >= 0; index-- {
 		query := d.db.Scopes(model.TableNameFunc(model.ChainBlock{BlockNum: uint(index) * (model.SplitTableBlockNum)})).Where("hash = ?", hash).Scan(&block)
-		if query != nil && query.Error == nil {
+		if query != nil && query.Error == nil && query.RowsAffected > 0 {
 			return &block
 		}
 	}
@@ -172,7 +172,7 @@ func (d *Dao) GetBlockByHash(c context.Context, hash string) *model.ChainBlock {
 func (d *Dao) GetBlockByNum(ctx context.Context, blockNum uint) *model.ChainBlock {
 	var block model.ChainBlock
 	query := d.db.WithContext(ctx).Scopes(model.TableNameFunc(&model.ChainBlock{BlockNum: blockNum})).Where("block_num = ?", blockNum).Find(&block)
-	if query == nil || query.Error != nil {
+	if query == nil || query.Error != nil || query.RowsAffected == 0 {
 		return nil
 	}
 	return &block
@@ -266,4 +266,29 @@ func (d *Dao) GetBlocksByNums(c context.Context, blockNums []uint, columns strin
 		blocks = append(blocks, tableData...)
 	}
 	return
+}
+
+func (d *Dao) RollbackBlock(ctx context.Context, blockNum uint) error {
+	txn := d.DbBegin()
+	defer d.DbRollback(txn)
+
+	// delete from blocks
+	if err := txn.WithContext(ctx).Scopes(d.TableNameFunc(&model.ChainBlock{BlockNum: blockNum})).Where("block_num = ?", blockNum).Delete(&model.ChainBlock{}).Error; err != nil {
+		return err
+	}
+	// delete from extrinsics
+	if err := txn.WithContext(ctx).Scopes(d.TableNameFunc(&model.ChainExtrinsic{BlockNum: blockNum})).Where("block_num = ?", blockNum).Delete(&model.ChainExtrinsic{}).Error; err != nil {
+		return err
+	}
+	// delete from events
+	if err := txn.WithContext(ctx).Scopes(d.TableNameFunc(&model.ChainEvent{BlockNum: blockNum})).Where("block_num = ?", blockNum).Delete(&model.ChainEvent{}).Error; err != nil {
+		return err
+	}
+	// delete from logs
+	if err := txn.WithContext(ctx).Scopes(d.TableNameFunc(&model.ChainLog{BlockNum: blockNum})).Where("block_num = ?", blockNum).Delete(&model.ChainLog{}).Error; err != nil {
+		return err
+	}
+
+	d.DbCommit(txn)
+	return nil
 }
