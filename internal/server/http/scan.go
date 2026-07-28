@@ -373,3 +373,17 @@ func cbcDVFHandle(c *gin.Context) {
 	d, err := svc.GetCBCDVFMetrics(ctx)
 	toJson(c, d, err)
 }
+
+func cbcRewardsHandle(c *gin.Context) {
+	p := new(BlocksParams)
+	if err := c.MustBindWith(p, binding.JSON); err != nil {
+		p.Limit = 10
+	}
+	if p.Limit <= 0 {
+		p.Limit = 10
+	}
+
+	ctx := c.Request.Context()
+	rewards, pageInfo := svc.GetCBCRewards(ctx, p.Limit, p.Before, p.After)
+	toJson(c, map[string]interface{}{"rewards": rewards, "pagination": pageInfo}, nil)
+}

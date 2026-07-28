@@ -57,6 +57,8 @@ type ExtrinsicDetail struct {
 	Fee                decimal.Decimal `json:"fee"`
 	Finalized          bool            `json:"finalized"`
 	Lifetime           *Lifetime       `json:"lifetime"`
+	Validator          string          `json:"validator,omitempty"`
+	ValidatorName      string          `json:"validator_name,omitempty"`
 }
 
 type Lifetime struct {

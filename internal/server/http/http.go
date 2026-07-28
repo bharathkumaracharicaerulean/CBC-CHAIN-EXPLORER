@@ -82,6 +82,8 @@ func initRouter(e *gin.Engine) {
 			s.GET("cbc/dcf", cbcDCFHandle)
 			s.POST("cbc/dvf", cbcDVFHandle)
 			s.GET("cbc/dvf", cbcDVFHandle)
+			s.POST("cbc/rewards", cbcRewardsHandle)
+			s.GET("cbc/rewards", cbcRewardsHandle)
 		}
 		pluginRouter(g)
 	}
