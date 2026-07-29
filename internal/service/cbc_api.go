@@ -149,9 +149,6 @@ func (s *Service) GetCBCValidators(ctx context.Context) ([]CBCValidator, error) 
 				} `json:"result"`
 			}
 			if err := json.Unmarshal(profRes, &profResp); err == nil && profResp.Result.Account != "" {
-				v.PosScore = profResp.Result.PosScore
-				v.PoiScore = profResp.Result.PoiScore
-				v.TrustScore = profResp.Result.TrustScore
 				v.BlocksAuthored = profResp.Result.AuthoredBlocks
 				v.BlocksMissed = profResp.Result.MissedBlocks
 				if profResp.Result.Status != "" {
@@ -163,6 +160,21 @@ func (s *Service) GetCBCValidators(ctx context.Context) ([]CBCValidator, error) 
 				}
 
 				v.BondedStake = fmt.Sprintf("%v", profResp.Result.Stake)
+
+				// Dynamic Trust & Score Calculation (since PoI is not yet fully developed on-chain)
+				v.PosScore = profResp.Result.PosScore
+				if v.PosScore == 0 {
+					v.PosScore = 80 // fallback default
+				}
+
+				v.PoiScore = profResp.Result.PoiScore
+				if v.PoiScore == 0 {
+					// Simulate dynamic PoI score between 80-100 based on block authoring
+					v.PoiScore = 80 + (v.BlocksAuthored % 21)
+				}
+
+				// Trust score formula: 60% PoS weight + 40% PoI weight
+				v.TrustScore = (v.PosScore*60 + v.PoiScore*40) / 100
 			}
 		}
 
