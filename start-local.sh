@@ -29,8 +29,10 @@ echo "✓ Backend compiled successfully to ./bin/cbcscan"
 # Step 3: Stop any existing local services to avoid port conflicts
 echo "Step 3: Stopping any existing local explorer processes..."
 pkill -f "cbcscan --conf" || true
-pkill -f "next-server" || true
-pkill -f "node_modules/next/dist/bin/next" || true
+pkill -9 -f "next-server" || true
+pkill -9 -f "node_modules/next" || true
+fuser -k 3000/tcp || true
+sleep 1
 
 # Step 4: Export Environment Variables for Backend
 export CONF_DIR="./configs"
@@ -73,7 +75,7 @@ echo "✓ API Server started (PID: $!)"
 echo "Step 5: Launching React UI frontend natively..."
 cd /home/bharat/projects/CBC-EXPLORER-UI
 export NEXT_PUBLIC_API_HOST="http://localhost:4399"
-nohup npm run dev -- -p 3000 > react_ui.log 2>&1 &
+nohup npm run dev -- -H 0.0.0.0 -p 3000 > react_ui.log 2>&1 &
 echo "✓ React UI started on http://localhost:3000 (PID: $!)"
 
 echo "=========================================="
